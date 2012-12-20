@@ -225,7 +225,7 @@ while (<$stream>) {
    }
    my $line = $_;
    if ($line =~ m/^\>(\S+)/) {
-     print  "<a name=$1> $line</a>\n";
+     print  "<a target='_blank' href='http://ncbi.nlm.nih.gov/nuccore?term=$1' name=$1> $line</a>\n";
    }
    else {print $line;}
    if ($line =~ m/Searching.*done/) {
