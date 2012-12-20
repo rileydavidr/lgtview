@@ -19,6 +19,13 @@ Ext.onReady(function(){
     var collapse_form = false;
     var single_file = false;
 
+    var runner = new Ext.util.TaskRunner();
+    var checkStatusTask = runner.newTask({
+        run: function(conf) { checkStatus(conf);} ,
+        interval: 10000
+    });
+
+
     if(id && file) {
         collapse_form = true;
         single_file = true;
@@ -27,6 +34,10 @@ Ext.onReady(function(){
         collapse_form = true;
     }
     var show_list = false;
+    if(!id && file) {
+        single_file = true,
+        show_list = true;
+    }
     if(qlist) {
         show_list = true;
     }
@@ -183,7 +194,7 @@ Ext.onReady(function(){
         pageSize: 500,
         proxy: {
             type: 'ajax',
-            url: '/cgi-bin/guiblast',
+            url: '/cgi-bin/twinblast_test/guiblast',
             actionMethods: {
                 read: 'POST'
             },
@@ -246,17 +257,53 @@ Ext.onReady(function(){
     } 
 
     function reloadPanels(newvals) {
-        console.log(newvals);
         var vals = form.getValues();
         Ext.apply(vals,newvals);
-        console.log(vals);
-        if(vals.qlist) {
+/*        if(vals.qlist) {
+            Ext.Ajax.request({
+                url: '/cgi-bin/guiblast',
+
             linkStore.proxy.extraParams = {'qlist': qlist};
             linkStore.load();
-        }
-        if(vals.num_lists== "1" && vals.blast && vals.id) {
-            reloadPanel(vals.blast,vals.id + vals.suff1,leftpanel);
-            reloadPanel(vals.blast,vals.id + vals.suff2,rightpanel);
+        }*/
+        if(vals.num_lists== "1" && vals.blast ){ //&& vals.id) {
+            var newconfig = {
+                'leftsuff' : vals.suff1,
+                'rightsuff' : vals.suff2,
+                'list' : vals.blast            
+            };
+            
+            // Load each panel
+            if(vals.id) {
+                newconfig['id'] = vals.id + vals.suff1;
+                reloadPanel(newconfig,leftpanel);
+                newconfig['id'] = vals.id + vals.suff2;
+                reloadPanel(newconfig,rightpanel);
+                form.getForm().setValues([{'id': 'id', value: vals.id}]);
+            }
+            if((vals.id && linkStore.getCount() == 0) || !vals.id) {
+            newconfig['printlist'] = 1;
+            linkStore.proxy.extraParams = newconfig;
+            linkStore.load({callback: function(records,operation,success) {
+                if(!records || (records && records.length == 0)) {
+                    if(operation.response) {
+                    var res = Ext.JSON.decode(operation.response.responseText);
+                    if(res.message) {
+                        vp.setLoading(res.message);
+                        newconfig['printlist'] = 0;
+                        checkStatusTask.args = [newconfig];
+                        checkStatusTask.start(); 
+                    }}
+                    gridpanel.doLayout();
+                }
+                if(!success) {
+                    
+                }
+            }});
+            }
+//            reloadPanel(newconfig,gridpanel);
+            
+            // Set the URL
             setUrlVars({
                 'leftsuff' : vals.suff1,
                 'rightsuff' : vals.suff2,
@@ -265,8 +312,22 @@ Ext.onReady(function(){
             });
         
         }else if(vals.num_lists == "2" && vals.blast1 && vals.blast2 && vals.id) {
-            reloadPanel(vals.blast1,vals.id,leftpanel);
-            reloadPanel(vals.blast2,vals.id,rightpanel);
+        
+            var config = {
+                'list' : vals.blast1,
+                'id' : vals.id
+            };
+            
+            // Load each panel
+            reloadPanel(config,leftpanel);
+            config['list'] = vals.blast2;
+            reloadPanel(config,rightpanel);
+//            config['printlist'] = 1;
+
+            if(!vals.id) {
+//            reloadPanel(config,gridpanel);
+            }
+            // Set the URL            
             setUrlVars({
                 'leftfile' : vals.blast1,
                 'rightfile' : vals.blast2,
@@ -277,27 +338,73 @@ Ext.onReady(function(){
         }
     
     }
-    function reloadPanel(list,id,panel) {
-        panel.setLoading({msg: 'Patience my friend...'});
+    function checkStatus(config) {
         Ext.Ajax.request({
-            url: '/cgi-bin/guiblast',
-            params: {
-                list: list,
-                //list: '/local/projects/HLGT/driley/output_repository/ncbi-blastn/9357_default/ncbi-blastn.raw_lgt.list',
-                id: id
-            },
+            url: '/cgi-bin/twinblast_test/guiblast',
+            params: config,
             success: function(response) {
-                panel.update(response.responseText);
-                panel.setLoading(false);
-                // vp.doLayout();
+                var res = Ext.JSON.decode(response.responseText,true);
+                if(res) {
+                    vp.setLoading(res.message);
+                    setPanelsLoading(false);
+                }
+                else {
+                    checkStatusTask.stop();
+                    vp.setLoading(false);
+                    reloadPanels({});
+                }
             },
             failure: function(response) {
-                Ext.Msg.alert('Error', 'Had a problem loading '+ id + 
-                '.<br/>The server may be a bit overloaded. Give it another try.');
+                  vp.setLoading('Hmmm... I appear to be having trouble somewhere. Just wait a second and it might come back.');
+                  setPanelsLoading(false);
+//                Ext.Msg.alert('Error', 'Had a problem loading '+ id +
+//                '.<br/>The server may be a bit overloaded. Give it another try.');
+            }
+        });            
+    }
+
+    function reloadPanel(config,panel) {
+        if(panel.isVisible()) {
+            panel.setLoading({msg: 'Patience my friend...'});
+        }
+        Ext.Ajax.request({
+            url: '/cgi-bin/twinblast_test/guiblast',
+            params: config,
+            success: function(response) {
+                var res = Ext.JSON.decode(response.responseText,true);
+                if((!config.printlist && res) || (res && config.printlist && !res.total)) {
+                    panel.setLoading(false);
+                    vp.setLoading(res.message);
+                    setPanelsLoading(false);
+                    checkStatusTask.args = [config];
+                    checkStatusTask.start();
+                }
+                else {
+//                    if(config.printlist) {
+//                        panel.getStore().loadData(res.root);
+//                    }
+//                    else {
+                        panel.update(response.responseText);
+//                    }
+                    vp.setLoading(false);
+                    panel.setLoading(false);
+                // vp.doLayout();
+                }
+            },
+            failure: function(response) {
+                panel.setLoading(false);
+                vp.setLoading('Hmmm... I appear to be having trouble somewhere. Just wait a second and it might come back.');
+                setPanelsLoading(false);
+//                Ext.Msg.alert('Error', 'Had a problem loading '+ id + 
+//                '.<br/>The server may be a bit overloaded. Give it another try.');
             }
         }); 
     }
-    
+    function setPanelsLoading(message) {
+        gridpanel.setLoading(message);
+        leftpanel.setLoading(message);
+        rightpanel.setLoading(message);
+    } 
     function setForm(obj) {
         
 

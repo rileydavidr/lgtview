@@ -1,4 +1,24 @@
 #!/usr/bin/perl -w
+
+=head1 NAME
+
+guiblast - Add a simple graphic to a raw blast report
+
+=head1 SYNOPSIS
+
+Adds a bio graphics image to a raw blast report and outputs HTML.
+
+=head1 DESCRIPTION
+
+Simple script to add a graphics image to a blast report. Also indexes alignment files
+and makes for quick retrieval by query ID.
+
+=head1 AUTHOR - David R. Riley
+
+e-mail: driley@som.umaryland.edu
+
+=cut
+
 use strict;
 use Bio::SearchIO;
 use Bio::Graphics;
@@ -11,21 +31,56 @@ use File::Basename;
 use Digest::MD5 qw(md5 md5_hex md5_base64);
 use URI::Escape;
 use JSON;
-my $cgi = CGI->new;
+use IPC::Open3;
+use POSIX qw(strftime);
+use Bio::SearchIO::FastResultEventBuilder;
 
+# Deal with the CGI inputs.
+my $cgi = CGI->new;
 my $file = uri_unescape($cgi->param('file'));
 my $list = uri_unescape($cgi->param('list'));
-my $id = uri_unescape($cgi->param('id')); 
-my $img_dir = '/export/software/apache/htdocs/';
-my $img_url = '/tmpblast/';
-my $idx_dir = '/export/software/apache/htdocs/tmpblast/';
+my $id = uri_unescape($cgi->param('id'));
+my $leftsuff = uri_unescape($cgi->param('leftsuff'));
+my $rightsuff = uri_unescape($cgi->param('rightsuff'));
+
+# Web-accessible directory where image file should be written.
+my $img_dir = '/export/software/apache/htdocs';
+
+#my $img_dir = '/tmp/';
+
+# URL to web-accessible directory where image files are written.
+my $img_url = '/twinblast_test/';
+
+# Place where blast indexes should be written.
+my $idx_dir = '/export/software/apache/htdocs/twinblast_test';
+
+#my $idx_dir = '/tmp/';
+
+my $print_list = $cgi->param('printlist');
 my $fname = '';
 my $qlist = $cgi->param('qlist');
 my $md5;
+my $start = $cgi->param('start');
+my $limit = $cgi->param('limit');
+my $index;
 
+# Deal with a single blast file here
+if($file) {
+    $fname = basename($file);
+    $md5 = md5_hex($file);
+}
+
+# Deal with a bunch of blast files here
+if($list) {
+   $fname = basename($list);
+   $md5 = md5_hex($list);
+}
+
+
+
+# If someone passes their own list file in we'll deal with it here. Need to move this
+# somewhere else
 if($qlist) {
-    my $start = $cgi->param('start');
-    my $limit = $cgi->param('limit');
     my @querys;
     tie @querys, 'Tie::File', $qlist;
     my $total = scalar @querys;
@@ -37,43 +92,58 @@ if($qlist) {
     print "]}";
     exit;
 }
-if($file) {
-    $fname = basename($file);
-    $md5 = md5_hex($file);
-}
-if($list) {
-   $fname = basename($list);
-   $md5 = md5_hex($list);
-}
+
+
+
 print STDERR "$md5\n";
 my $indexed_file = "$idx_dir/$md5.idx";
 my $indexed = -e $indexed_file;
+my $list_file = "$idx_dir/$md5.list";
 
-my $index = Bio::Index::Blast->new(-filename => $indexed_file,
-                                   -write_flag => 1);
-unless ($indexed) {
-   print STDERR "Creating .idx\n";
-                              #$index->id_parser(\&get_id);
-                              # sub get_id {
-                              # my $line = shift;
-                              #      $line =~ /Query= (\S+)/;
-                              ##      print $1;
-                              #      $1;
-                              #  }
-   my $files = [];
-   if($list) {
-        open IN, "<$list" or die;
-        while(<IN>) {
-            chomp;
-            push(@$files, $_);
-        }
+$index = Bio::Index::Blast->new(-filename => $indexed_file,
+                                       -write_flag => 1);
+                                       
+# If our files are good then we'll just get to it.
+if($indexed && &check_prep_status($md5)) {
+
+    if($print_list) {
+        &print_list();
     }
     else {
-        $files = [$file];
+        &print_html();
     }
-   $index->make_index(@$files);
 }
 
+# If our files aren't ready then we'll hit this.
+else {
+    &prep_files($index);
+}
+
+sub print_list {
+#    if(! -e $list_file) {
+#        my $files = &get_input_list();
+#        print STDERR "About to make query list\n";
+#        &make_query_list($files,$list_file);
+#    }
+    my @querys;
+    tie @querys, 'Tie::File', $list_file;
+    my $total = scalar @querys;
+    print "Content-type: text/plain\n\n";
+    print "{total: $total,\nroot: [\n";
+    map {
+        my @f = split(/\t/, $_);
+        print to_json({'name' => $f[0]
+#                       'length' => $f[1],
+#                       'num_hits' => $f[2]
+                  }).",\n";
+    } @querys[$start..$start+$limit];
+    print "]}";
+    exit;    
+}
+
+
+sub print_html {
+                                       
 my $fh = $index->get_stream($id);
 my $searchio = Bio::SearchIO->new(-noclose => 1,
                                   -format  => 'blast',
@@ -170,5 +240,184 @@ print "</pre>";
 
 close $stream || die "error\n";
 #close WH || die "error\n";
+}
+
+sub make_query_list {
+    my $files = shift;
+    my $file = shift;
+    open OUT, ">$file" or die "Unable to open list file $file for writing\n";    
+    foreach my $f (@$files) {
+        open(GREP, "grep Query= $f |"); 
+        while(my $line = <GREP>) {
+        chomp $line;
+        $line =~ s/Query= //;
+        $line =~ s/$leftsuff$//;
+        $line =~ s/$rightsuff$//;;
+        print OUT "$line\n";
+        }
+#        open(my $fh, "<$f") or die "Unable to open $f\n";;
+#        my $searchio = Bio::SearchIO->new(-noclose => 1,
+#                                          -format => 'blast',
+#                                          -best => 1,
+#                                          -fh => $fh);
+#        $searchio->attach_EventHandler(Bio::SearchIO::FastResultEventBuilder->new); 
+        # Print out the query name, query length and number of hits.
+#        while(my $res = $searchio->next_result()) {
+#            my $name = $res->query_name;
+#            $name =~ s/$leftsuff$//;
+#            $name =~ s/$rightsuff$//;
+#            print OUT join("\t", ($name));
+#            print OUT "\n";        
+#        }
+#        close $fh;
+    }
+    close OUT;
+    `sort -u $file > $file\_sorted`;
+    `mv $file\_sorted $file`;
+
+    return $file;
+}
+
+sub get_input_list {
+    my $files;
+    if($list) {
+        open IN, "<$list" or die;
+        while(<IN>) {
+            chomp;
+            push(@$files, $_);
+        }
+    }
+    else {
+        $files = [$file];
+    }
+    return $files;
+}
+
+sub fork_proc {
+    my $proc = shift;
+    my $file = shift;
+    my $pid;
+    if($pid = fork()) {
+        #print "$pid and $$\n";
+    }
+    elsif(defined($pid)) {
+    
+        # If there is a pid file already double check that 
+        # someone isn't already working on this.
+        if(-e $file) {
+            print STDERR "Checking on $file I am $$\n";
+            &check_prep_status($md5);
+        }
+        `echo $$ > $file`;
+        print STDERR "About to execute proc from $$\n";
+        &$proc();
+        if(-e $file) {
+            `rm $file`;
+        }
+        else {
+            print STDERR "Had an issue, couldn't delete the pid file $pid\n";
+        }
+        print STDERR "$$ is exiting, all done\n";
+        &print_message();
+        exit;
+    }
+    else {
+        print STDERR "Unable to fork\n";
+    }
+    
+    return $pid;
+}
 
 
+sub check_proc {
+    my $file = shift;
+    
+    my $ret = 0;
+    if( -e $file) {
+        my $pid = `cat $file`;
+
+        if(kill 0, $pid) {
+            $ret = $pid;
+        }
+        else {
+            $ret = 'died';
+        }
+    }
+
+    return $ret;
+}
+
+sub prep_files {
+    my $index = shift;
+    my $sub = sub {
+        print STDERR "Creating .idx\n";
+        
+        # Make sure nobody is doing this already
+        my $p = `cat $img_dir/$md5.pid`;
+        chomp $p;
+        print STDERR "Checking $p I am  $$\n";
+        if($$ != $p) {
+            &check_prep_status($md5);
+            if(! -e "$img_dir/$md5.pid") {
+            print "Content-type: text/plain\n\n";
+            my $time = strftime "%a %b %e %H:%M:%S %Y", gmtime;
+                print to_json(
+
+                {message => "The BLAST data for this page is being prepped. The process is still going (last checked at $time).<br/>This box will update automatically when the process is complete.<br/><br/>Feel free to navigate away and come back later to check on it.",
+                success => 1});
+                exit;
+            }
+            print STDERR "pid file was there for $p. I am $$\n";
+        }
+        # Get all the blast reports
+        my $files = &get_input_list();
+        
+        # Make a blast index.
+        $index->make_index(@$files);
+        
+        # Make a query list file.
+        &make_query_list($files,$list_file);
+    };
+
+    &fork_proc($sub,"$img_dir/$md5.pid");
+#    &print_message();
+    exit;
+}
+
+# Check the prep status. Currently thing subroutine will exit with json formatted
+# messages if the process is still running.
+sub check_prep_status {
+    my $md5 = shift;
+    my $pid = &check_proc("$img_dir/$md5.pid");
+    chomp $pid;
+    print STDERR "Got $pid I am $$\n"; 
+    # Return immediately if the prep is done. No need to waste time.
+    return 1 if(! $pid);
+    print "Content-type: text/plain\n\n";
+    my $time = strftime "%a %b %e %H:%M:%S %Y", gmtime;
+    # Return an error message if the prep pid died before completing
+    if($pid eq 'died') {
+        print to_json(
+            {message => "The prep process appears to have failed as of $time.",
+            success => 0});
+        exit;
+    }
+    # Return a message saying that the prep is still going. Return a datestamp so the user knows things
+    # are still happening.
+    elsif($pid !=0) {
+        print STDERR "$$ is exiting\n";
+        print to_json(
+            {message => "The BLAST data for this page is being prepped. The process is still going (last checked at $time).<br/>This box will update automatically when the process is complete.<br/><br/>Feel free to navigate away and come back later to check on it.",
+            success => 1});    
+    exit;
+    }
+}
+
+sub print_message {
+    print "Content-type: text/plain\n\n";
+    my $time = strftime "%a %b %e %H:%M:%S %Y", gmtime;
+    print to_json(
+        {message => "The BLAST data for this page is being prepped. The process is still going (last checked at $time).<br/>This box will update automatically when the process is complete.<br/><br/>Feel free to navigate away and come back later to check on it.",
+         success => 1});  
+
+}
