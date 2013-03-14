@@ -8,6 +8,7 @@ Ext.onReady(function(){
     var qlist = vars.qlist ? unescape(vars.qlist) : undefined;
     // We need these three if we're going to use a single file
     var file = vars.file ? unescape(vars.file) : undefined;
+    var list = vars.list ? unescape(vars.list) : undefined;
     var left_suff = vars.leftsuff ? vars.leftsuff : '_bac';
     var right_suff = vars.rightsuff ? vars.rightsuff : '_human';
 
@@ -26,7 +27,7 @@ Ext.onReady(function(){
     });
 
 
-    if(id && file) {
+    if(id && (file || list)) {
         collapse_form = true;
         single_file = true;
     }
@@ -34,7 +35,7 @@ Ext.onReady(function(){
         collapse_form = true;
     }
     var show_list = false;
-    if(!id && file) {
+    if(!id && (file || list)) {
         single_file = true,
         show_list = true;
     }
@@ -42,7 +43,10 @@ Ext.onReady(function(){
         show_list = true;
     }
 
-
+    var pwidth = Ext.getBody().getViewSize().width/2;
+    if(show_list) {
+        pwidth = pwidth - 125;
+    }
     // Left Side
     var leftpanel = Ext.create('Ext.panel.Panel', ({
 //        title: 'Bacterial',
@@ -51,7 +55,7 @@ Ext.onReady(function(){
         html: 'Nothing loaded yet',
         autoScroll: true,
         region: 'west',
-        width: Ext.getBody().getViewSize().width/2,
+        width: pwidth,//Ext.getBody().getViewSize().width/2,
 //        flex: 1
     }));
 
@@ -64,26 +68,38 @@ Ext.onReady(function(){
         autoScroll: true,
         id: 'right_side',
         region: 'center',
-        width: '50%',
+        width: pwidth,
         flex: 1
     }));
 
 
     var single_list_form = Ext.create('Ext.form.FieldContainer', ({
         defaultType: 'textfield',
-        hidden: !single_file,
+//	width: '100%',
+        layout: {type: 'vbox',
+                 align: 'left'},
+
+        //hidden: !single_file,
         items: [{
-            fieldLabel: 'Blast List',
+            fieldLabel: 'Blast File',
+            name: 'blast_file',
+            value: file,
+            width: '100%'
+        },{
+            fieldLabel: 'Blast File List (optional)',
             name: 'blast',
-            value: file
+            value: list,
+            width: '100%'
         },{
             fieldLabel: 'Left ID suffix',
             name: 'suff1',
-            value: left_suff
+            value: left_suff,
+            width: 200
         },{
             fieldLabel: 'Right ID suffix',
             name: 'suff2',
-            value: right_suff
+            value: right_suff,
+            width: 200 
         }]
     }));
 
@@ -110,12 +126,13 @@ Ext.onReady(function(){
             boxLabel: '1 BLAST search, 2 ids',
             inputValue: '1',
             checked: single_file,
+            hidden: true,
             name: 'num_lists',
             handler: function() {
                 double_list_form.show();
                 single_list_form.hide();
             }
-        },{
+        }/*,{
             boxLabel: '2 BLAST searches, 1 id',
             inputValue: '2',
             checked: !single_file,
@@ -124,7 +141,7 @@ Ext.onReady(function(){
                 double_list_form.hide();
                 single_list_form.show();
             }
-        }]});
+        }*/]});
     var form = Ext.create('Ext.form.Panel', ({
 //        layout: 'fit',
 //        id: 'top',
@@ -136,15 +153,18 @@ Ext.onReady(function(){
         items: [
             {xtype: 'fieldset',
              title: 'Config',
+             layout: 'vbox',
              defaultType: 'textfield',
              items: [
                  {fieldLabel: 'List of queries (Optional)',
                   name: 'qlist',
-                  value: qlist
+                  value: qlist,
+                  width: '100%'
                  },
                  {fieldLabel: 'ID (Optional)',
                   name: 'id',
-                  value: id
+                  value: id,
+                  width: 300 
                  },
              ]},
             {xtype: 'fieldset',
@@ -194,7 +214,7 @@ Ext.onReady(function(){
         pageSize: 500,
         proxy: {
             type: 'ajax',
-            url: '/cgi-bin/twinblast_test/guiblast',
+            url: '/cgi-bin/twinblast_test/guiblast_open',
             actionMethods: {
                 read: 'POST'
             },
@@ -227,6 +247,18 @@ Ext.onReady(function(){
             reloadPanels({id: selectedRecord[0].data.name});
         }
     });
+
+    function onAfterRender() {
+        console.log("Here setting the history thing");
+        Ext.History.on('change', function(token) {
+            var starts_with = /\?/;
+            console.log(token);
+            if(token && starts_with.test(token) ) {
+                console.log(token);
+            }
+        })
+    }
+
     var vp = new Ext.Viewport({
         layout: 'border',
         autoScroll: true,
@@ -241,6 +273,9 @@ Ext.onReady(function(){
             align: 'stretchmax',
             pack: 'start'*/
 //        }]
+        listeners: {
+            afterrender: onAfterRender 
+        }
     });
     
     vp.doLayout();
@@ -266,11 +301,12 @@ Ext.onReady(function(){
             linkStore.proxy.extraParams = {'qlist': qlist};
             linkStore.load();
         }*/
-        if(vals.num_lists== "1" && vals.blast ){ //&& vals.id) {
+        if(vals.num_lists== "1" && (vals.blast || vals.blast_file)){ //&& vals.id) {
             var newconfig = {
                 'leftsuff' : vals.suff1,
                 'rightsuff' : vals.suff2,
-                'list' : vals.blast            
+                'list' : vals.blast,
+                'file' : vals.blast_file
             };
             
             // Load each panel
@@ -283,6 +319,9 @@ Ext.onReady(function(){
             }
             if((vals.id && linkStore.getCount() == 0) || !vals.id) {
             newconfig['printlist'] = 1;
+            if(vals.qlist) {
+                newconfig.qlist = vals.qlist;
+            }
             linkStore.proxy.extraParams = newconfig;
             linkStore.load({callback: function(records,operation,success) {
                 if(!records || (records && records.length == 0)) {
@@ -308,7 +347,9 @@ Ext.onReady(function(){
                 'leftsuff' : vals.suff1,
                 'rightsuff' : vals.suff2,
                 'id': vals.id,
-                'file' : vals.blast
+                'file' : vals.blast_file,
+                'list' : vals.blast,
+                'qlist': vals.qlist
             });
         
         }else if(vals.num_lists == "2" && vals.blast1 && vals.blast2 && vals.id) {
@@ -340,7 +381,7 @@ Ext.onReady(function(){
     }
     function checkStatus(config) {
         Ext.Ajax.request({
-            url: '/cgi-bin/twinblast_test/guiblast',
+            url: '/cgi-bin/twinblast_test/guiblast_open',
             params: config,
             success: function(response) {
                 var res = Ext.JSON.decode(response.responseText,true);
@@ -368,7 +409,7 @@ Ext.onReady(function(){
             panel.setLoading({msg: 'Patience my friend...'});
         }
         Ext.Ajax.request({
-            url: '/cgi-bin/twinblast_test/guiblast',
+            url: '/cgi-bin/twinblast_test/guiblast_open',
             params: config,
             success: function(response) {
                 var res = Ext.JSON.decode(response.responseText,true);
