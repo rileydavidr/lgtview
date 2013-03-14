@@ -20,6 +20,7 @@ e-mail: driley@som.umaryland.edu
 =cut
 
 use strict;
+use lib '.';
 use Bio::SearchIO;
 use Bio::Graphics;
 use Bio::SeqFeature::Generic;
@@ -33,7 +34,6 @@ use URI::Escape;
 use JSON;
 use IPC::Open3;
 use POSIX qw(strftime);
-use Bio::SearchIO::FastResultEventBuilder;
 
 # Deal with the CGI inputs.
 my $cgi = CGI->new;
@@ -43,16 +43,21 @@ my $id = uri_unescape($cgi->param('id'));
 my $leftsuff = uri_unescape($cgi->param('leftsuff'));
 my $rightsuff = uri_unescape($cgi->param('rightsuff'));
 
-# Web-accessible directory where image file should be written.
-my $img_dir = '/export/software/apache/htdocs';
+my $skip_text_alignments = 0;
+my $max_hits = 20;
+my $max_hsps = 20;
 
-#my $img_dir = '/tmp/';
+# Web-accessible directory where image file should be written.
+my $img_dir = '/var/www/twinblast/images/';
 
 # URL to web-accessible directory where image files are written.
-my $img_url = '/twinblast_test/';
+my $img_url = '/twinblast/images/';
 
 # Place where blast indexes should be written.
-my $idx_dir = '/export/software/apache/htdocs/twinblast_test';
+my $idx_dir = '/var/www/twinblast/indexes/';
+
+# Required prefix for all files
+my $prefix = '/var/www/twinblast/files/';
 
 #my $idx_dir = '/tmp/';
 
@@ -66,14 +71,18 @@ my $index;
 
 # Deal with a single blast file here
 if($file) {
+    $file = "$prefix/$file";
+    $file =~ s/\/\//\//g;
     $fname = basename($file);
     $md5 = md5_hex($file);
 }
 
 # Deal with a bunch of blast files here
 if($list) {
-   $fname = basename($list);
-   $md5 = md5_hex($list);
+    $list = "$prefix/$list";
+    $list =~ s/\/\//\//g;
+    $fname = basename($list);
+    $md5 = md5_hex($list);
 }
 
 
@@ -81,13 +90,17 @@ if($list) {
 # If someone passes their own list file in we'll deal with it here. Need to move this
 # somewhere else
 if($qlist) {
+    $qlist = "$prefix/$qlist";
+    $qlist =~ s/\/\//\//g;
     my @querys;
     tie @querys, 'Tie::File', $qlist;
     my $total = scalar @querys;
     print "Content-type: text/plain\n\n";
     print "{total: $total,\nroot: [\n";
     map {
+        if($_) {
         print to_json({'name' => $_}).",\n";
+        }
     } @querys[$start..$start+$limit];
     print "]}";
     exit;
@@ -95,7 +108,6 @@ if($qlist) {
 
 
 
-print STDERR "$md5\n";
 my $indexed_file = "$idx_dir/$md5.idx";
 my $indexed = -e $indexed_file;
 my $list_file = "$idx_dir/$md5.list";
@@ -132,10 +144,13 @@ sub print_list {
     print "{total: $total,\nroot: [\n";
     map {
         my @f = split(/\t/, $_);
-        print to_json({'name' => $f[0]
+        if($f[0]) {
+            print to_json({'name' => $f[0]
 #                       'length' => $f[1],
 #                       'num_hits' => $f[2]
                   }).",\n";
+        }
+        else { last; }
     } @querys[$start..$start+$limit];
     print "]}";
     exit;    
@@ -143,10 +158,17 @@ sub print_list {
 
 
 sub print_html {
-                                       
+
+#my $fooh = $index->get_stream($id);
+#for(my $i =0;$i<20;$i++) {
+#my $foo = <$fooh>;
+#print STDERR $foo;
+#}                                       
 my $fh = $index->get_stream($id);
+my $format = 'blast';
 my $searchio = Bio::SearchIO->new(-noclose => 1,
-                                  -format  => 'blast',
+                                  -format  => $format,
+                                  -report_format => 0,
                                   -fh      => $fh); 
 
 my $result = $searchio->next_result() or die "No Result.\n";
@@ -179,37 +201,68 @@ my $track = $panel->add_track(
          -bgcolor => 'blue',
          -font2color => 'red',
          -sort_order => 'high_score',
+         -bump => 1,
          -description => sub {
             my $feature = shift;
             return unless $feature->has_tag('description');
             my ($description) = $feature->each_tag_value('description');
             my $score = $feature->score;
-            "$description, score=$score";
+            #use Data::Dumper;
+            #print STDERR Dumper $feature;
+           #my $eval = $feature->evalue;
+            #my $pid = $feature->percent_identity;
+            "$description";
             },
       );
-
+my $i = 0;
 while (my $hit = $result->next_hit) {
+#    last if $i >= $max_hits;
  ##next unless $hit->significance < 1E-20;
    my $feature = Bio::SeqFeature::Generic->new(
          -display_name  => $hit->name,
          -score         => $hit->raw_score,
          -tag           => {
-                  description => $hit->description
+                  description => $hit->description.", score=".$hit->raw_score."|".($hit->frac_identical*100)."% identical"
                   },
          );
-#   print STDERR "$hit->name\n";
+   my $best_eval = $hit->significance; 
+   #print STDERR "$hit->name\n";
+#   my $hsp = $hit->next_hsp;
    while(my $hsp = $hit->next_hsp ) {
+#   my $feature = Bio::SeqFeature::Generic->new(
+#         -display_name  => $hit->name,
+#         -score         => $hsp->bits,
+#         -start         => $hsp->start,
+#         -end           => $hsp->end, 
+#         -tag           => {
+#                  description => $hit->description.", score=".$hsp->bits."|".($hsp->frac_identical*100)."% identical"
+#                  },
+#         );
+      if($hsp->significance <= $best_eval) {
       $feature->add_sub_SeqFeature($hsp,'EXPAND');
+      }
+#   $track->add_feature($feature);
    }
    $track->add_feature($feature);
+   $i++;
 }
 
-my ($url,$map,$mapname)= 
-   $panel->image_and_map(-root => $img_dir,
+my ($url,$map,$mapname);
+
+   if($skip_text_alignments) {
+       ($url,$map,$mapname) = $panel->image_and_map(-root => $img_dir,
                          -url => $img_url,
-                         -link => '#$name',
+                         -link => 'http://ncbi.nlm.nih.gov/nuccore?term=$name',
                          -mapname => "$id");
 
+    }
+    else {
+        ($url,$map,$mapname) = $panel->image_and_map(-root => $img_dir,
+                         -url => $img_url,
+                         -link => '#$name',
+#                         -onclick => "Ext.get('$name').scrollIntoView()",
+                         -mapname => "$id");
+    }
 my $stream = $index->get_stream($id);
 #open WH, *STDOUT;
 #open (WH, ">", "$file.html");
@@ -218,22 +271,30 @@ print "Content-type: text/html\n\n";
 print "<pre>";
 
 my $last=0;
+my $parsed_query = 0;
 while (<$stream>) {
-   if (/^.?BLAST/) {
+   if (/^.?BLAST/ || (/^Query=/ && $parsed_query)) {
       $last++;
       if ($last >1) {last};
    }
    my $line = $_;
+   if($skip_text_alignments && $line =~ /^>/) {
+        last;
+   }
+   if($line =~ /^Query/) {
+       $parsed_query = 1;
+   }
    if ($line =~ m/^\>(\S+)/) {
      print  "<a target='_blank' href='http://ncbi.nlm.nih.gov/nuccore?term=$1' name=$1> $line</a>\n";
    }
-   else {print $line;}
-   if ($line =~ m/Searching.*done/) {
-      print  "</pre>\n"; 
+   elsif($line =~ /^\s+Score\s+E/) {
+      print  "</pre>\n";
       print  "$map\n";
       print   qq(<img src="$url" usemap="#$mapname">),"\n";
       print  "<pre>\n";
-   }
+      print $line;
+   } 
+   else {print $line;}
 } 
 print "</pre>";
 #print  "</pre>\n</body>\n</html>\n";
@@ -353,12 +414,12 @@ sub prep_files {
         print STDERR "Creating .idx\n";
         
         # Make sure nobody is doing this already
-        my $p = `cat $img_dir/$md5.pid`;
+        my $p = `cat $idx_dir/$md5.pid`;
         chomp $p;
         print STDERR "Checking $p I am  $$\n";
         if($$ != $p) {
             &check_prep_status($md5);
-            if(! -e "$img_dir/$md5.pid") {
+            if(! -e "$idx_dir/$md5.pid") {
             print "Content-type: text/plain\n\n";
             my $time = strftime "%a %b %e %H:%M:%S %Y", gmtime;
                 print to_json(
@@ -379,7 +440,7 @@ sub prep_files {
         &make_query_list($files,$list_file);
     };
 
-    &fork_proc($sub,"$img_dir/$md5.pid");
+    &fork_proc($sub,"$idx_dir/$md5.pid");
 #    &print_message();
     exit;
 }
@@ -388,7 +449,7 @@ sub prep_files {
 # messages if the process is still running.
 sub check_prep_status {
     my $md5 = shift;
-    my $pid = &check_proc("$img_dir/$md5.pid");
+    my $pid = &check_proc("$idx_dir/$md5.pid");
     chomp $pid;
     print STDERR "Got $pid I am $$\n"; 
     # Return immediately if the prep is done. No need to waste time.
